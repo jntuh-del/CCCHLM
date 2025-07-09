@@ -1,0 +1,520 @@
+function [Aout, Avote2] = vote_2D(points, points_weight, directions_all, Aall, thres)
+n_directions = size(directions_all,1);
+accumulator_votes_idx = false(size(Aall,1), size(points,1), n_directions);
+for i_point = 1:size(points,1)
+    for i_direction = 1:n_directions
+		 % save time and ignore irelevant points from the get-go
+        idx_to_use = find( (Aall(:, 1) > points(i_point, 1)) & (Aall(:, 2) > points(i_point, 2)));
+        if isempty(idx_to_use), continue; end
+		
+        % calculate distance between all A options and the line defined by
+        % i_point and i_direction. If the distance is smaller than a thres,
+        % increase the cell in accumulator
+        dist1 = sqrt(sum([Aall(idx_to_use, 1)-points(i_point, 1), Aall(idx_to_use, 2)-points(i_point, 2)].^2,2));
+        %dist1 = dist1 - min(dist1);
+        dist1 = dist1./sqrt(2) + 1;
+        
+        dist =  -points(i_point, 1)*directions_all(i_direction,2) + ...
+            points(i_point, 2)*directions_all(i_direction,1) + ...
+            Aall(idx_to_use, 1)*directions_all(i_direction,2) - ...
+            Aall(idx_to_use, 2)*directions_all(i_direction,1);
+        idx = abs(dist)<2*thres.*dist1;
+        if ~any(idx), continue; end
+
+        idx_full = idx_to_use(idx);
+        accumulator_votes_idx(idx_full, i_point,i_direction) = true;
+    end
+end
+% use only haze-lined that are supported by 2 points or more
+accumulator_votes_idx2 = (sum(uint8(accumulator_votes_idx),2))>=2; 
+accumulator_votes_idx = bsxfun(@and, accumulator_votes_idx ,accumulator_votes_idx2);
+accumulator_unique = zeros(size(Aall,1),1);
+for iA = 1:size(Aall,1)
+    idx_to_use = find(Aall(iA, 1) > points(:, 1) & (Aall(iA, 2) > points(:, 2)));
+    points_dist = sqrt((Aall(iA,1) - points(idx_to_use,1)).^2+(Aall(iA,2) - points(idx_to_use,2)).^2);
+    points_weight_dist = points_weight(idx_to_use).*(5.*exp(-reshape(points_dist,1,[]))+1); 
+    accumulator_unique(iA) = sum(points_weight_dist(any(accumulator_votes_idx(iA,idx_to_use,:),3)));
+end
+[~, Aestimate_idx] = max(accumulator_unique);
+Aout = Aall(Aestimate_idx,:);
+Avote2 = accumulator_unique; 
+
+end % function vote_2D
+clear;
+close all; 
+clc;
+Input = imread("Screenshot 2025-07-01 125453.png");
+im_c = double(Input)/ 255; 
+[m, n, c] = size(im_c); 
+r = im_c(:, :, 1);
+g = im_c(:, :, 2);
+b = im_c(:, :, 3);
+Mean(1) = mean(mean(r));
+Mean(2) = mean(mean(g));
+Mean(3) = mean(mean(b));
+V(1) = max(max(r));
+V(2) = max(max(g));
+V(3) = max(max(b));
+max_1 = max(V);
+ratio = [1, 1, 1];
+satLevel = 0.001 * ratio;
+[m1, n1, p] = size(im_c);
+imgRGB_orig = zeros(p, m1 * n1);
+for i = 1 : p
+   imgRGB_orig(i, : ) = reshape(double(im_c(:, :, i)), [1, m1 * n1]);
+end
+
+imRGB = zeros(size(imgRGB_orig));
+% Histogram contrast adjustment
+for ch = 1 : p
+    % Define quantile range for contrast adjustment
+    q = [satLevel(ch), 1 - satLevel(ch)];
+    tiles = quantile(imgRGB_orig(ch, :), q); % Calculate quantiles
+    temp = imgRGB_orig(ch, :);
+    
+    % Clip pixel values based on the quantiles
+    temp(temp < tiles(1)) = tiles(1);
+    temp(temp > tiles(2)) = tiles(2);
+      % Store adjusted values
+    imRGB(ch, :) = temp;
+    
+    % Normalize the pixel values to the range [0, max_1]
+    pmin = min(imRGB(ch, :));
+    pmax = max(imRGB(ch, :));
+    imRGB(ch, :) = (imRGB(ch, :) - pmin) / (pmax - pmin) * max_1;
+end
+% Initialize the output image
+im_c_remap = zeros(size(im_c));
+
+% Reshape and assign the adjusted RGB values back to the output image
+for i = 1 : p
+       im_c_remap(:, :, i) = reshape(imRGB(i, :), [m1, n1]); 
+end
+sum_r = sum(im_c(:,:,1), 'all'); % Sum of the red channel
+sum_g = sum(im_c(:,:,2), 'all'); % Sum of the green channel
+sum_b = sum(im_c(:,:,3), 'all'); % Sum of the blue channel
+% Adjust the color channel of im_c_remap based on the total sum of the channels.
+if sum_r > max(sum_g, sum_b)
+    im_c_remap(:,:,2) = im_c(:,:,2); % Keep the green channel unchanged
+    im_c_remap(:,:,3) = im_c(:,:,3); % Keep the blue channel unchanged
+elseif sum_g > max(sum_r, sum_b)
+    im_c_remap(:,:,1) = im_c(:,:,1); % Keep the red channel unchanged
+    im_c_remap(:,:,3) = im_c(:,:,3); % Keep the blue channel unchanged
+else
+    im_c_remap(:,:,1) = im_c(:,:,1); % Keep the red channel unchanged
+    im_c_remap(:,:,2) = im_c(:,:,2); % Keep the green channel unchanged
+end
+% Traverse each pixel and fill the matrix
+im_c_r_x = zeros(m*n, 4); % Matrix for the red channel
+im_c_g_x = zeros(m*n, 4); % Matrix for the green channel
+im_c_b_x = zeros(m*n, 4); % Matrix for the blue channel
+
+for i = 1:m
+    for j = 1:n
+        idx = (i-1)*n + j; % Calculate the linear index for the current pixel
+
+        im_c_r_x(idx, :) = [im_c_remap(i, j, 1), i, j, im_c(i, j, 1)]; % Store red channel data with pixel coordinates and original red value
+
+        im_c_g_x(idx, :) = [im_c_remap(i, j, 2), i, j, im_c(i, j, 2)]; % Store green channel data with pixel coordinates and original green value
+
+        im_c_b_x(idx, :) = [im_c_remap(i, j, 3), i, j, im_c(i, j, 3)]; % Store blue channel data with pixel coordinates and original blue value
+    end
+end
+
+im_c_r_x = sortrows(im_c_r_x, 4); % Sort red channel data by original red values
+im_c_g_x = sortrows(im_c_g_x, 4); % Sort green channel data by original green values
+im_c_b_x = sortrows(im_c_b_x, 4); % Sort blue channel data by original blue values
+
+if sum_r > max(sum_g, sum_b)
+    gain = im_c_r_x(:,1) ./ im_c_r_x(:,4); % Calculate gain for red channel
+    gain(isnan(gain)) = 0; % Handle NaN values (avoid division by zero)
+    a1 = max(im_c_r_x(:,1)) / max(im_c_g_x(:,4)); % Ratio of red to green
+    a2 = max(im_c_r_x(:,1)) / max(im_c_b_x(:,4)); % Ratio of red to blue
+
+    for i = 1:m*n
+        im_c_remap(im_c_g_x(i,2), im_c_g_x(i,3), 2) = im_c_g_x(i,1) * gain(i) * a1; % Adjust green channel
+        im_c_remap(im_c_b_x(i,2), im_c_b_x(i,3), 3) = im_c_b_x(i,1) * gain(i) * a2; % Adjust blue channel
+    end
+elseif sum_g > max(sum_r, sum_b)
+
+    gain = im_c_g_x(:,1) ./ im_c_g_x(:,4); % Calculate gain for green channel
+    gain(isnan(gain)) = 0; % Handle NaN values
+    a1 = max(im_c_g_x(:,1)) / max(im_c_r_x(:,4)); % Ratio of green to red
+    a2 = max(im_c_g_x(:,1)) / max(im_c_b_x(:,4)); % Ratio of green to blue
+
+    for i = 1:m*n
+        im_c_remap(im_c_r_x(i,2), im_c_r_x(i,3), 1) = im_c_r_x(i,1) * gain(i) * a1; % Adjust red channel
+        im_c_remap(im_c_b_x(i,2), im_c_b_x(i,3), 3) = im_c_b_x(i,1) * gain(i) * a2; % Adjust blue channel
+    end
+else
+
+    gain = im_c_b_x(:,1) ./ im_c_b_x(:,4); % Calculate gain for blue channel
+    gain(isnan(gain)) = 0; % Handle NaN values
+    a1 = max(im_c_b_x(:,1)) / max(im_c_r_x(:,4)); % Ratio of blue to red
+    a2 = max(im_c_b_x(:,1)) / max(im_c_g_x(:,4)); % Ratio of blue to green
+
+    for i = 1:m*n
+        im_c_remap(im_c_r_x(i,2), im_c_r_x(i,3), 1) = im_c_r_x(i,1) * gain(i) * a1; % Adjust red channel
+        im_c_remap(im_c_g_x(i,2), im_c_g_x(i,3), 2) = im_c_g_x(i,1) * gain(i) * a2; % Adjust green channel
+    end
+end
+im_c = im_c_remap;
+
+sum_r = sum(sum(im_c(:,:,1))); 
+sum_g = sum(sum(im_c(:,:,2))); 
+sum_b = sum(sum(im_c(:,:,3))); 
+
+Thr = 10; 
+alpha = 0.8; 
+beta = 0.2; 
+% Determine the dominant color channel based on the sum of each channel
+if ((sum_g > sum_r) && (sum_g > sum_b)) 
+    g_r = sum_g / sum_r; 
+    g_b = sum_g / sum_b; 
+
+    if (g_r > Thr)
+        g_r = Thr;
+    end
+    if (g_b > Thr)
+        g_b = Thr;
+    end
+
+    im_c(:,:,1) = im_c(:,:,1) * alpha + (g_r - alpha - beta) * sum_r * (im_c(:,:,2)) / sum_g + beta * sum_r / (m * n);
+    im_c(:,:,2) = im_c(:,:,2);
+    im_c(:,:,3) = im_c(:,:,3) * alpha + (g_b - alpha - beta) * sum_b * (im_c(:,:,2)) / sum_g + beta * sum_b / (m * n);
+
+elseif ((sum_r > sum_g) && (sum_r > sum_b)) 
+    r_g = sum_r / sum_g; 
+    r_b = sum_r / sum_b; 
+
+    if (r_g > Thr)
+        r_g = Thr;
+    end
+    if (r_b > Thr)
+        r_b = Thr;
+    end
+
+    im_c(:,:,1) = im_c(:,:,1); 
+    im_c(:,:,2) = im_c(:,:,2) * alpha + (r_g - alpha - beta) * sum_g * (im_c(:,:,1)) / sum_r + beta * sum_g / (m * n);
+    im_c(:,:,3) = im_c(:,:,3) * alpha + (r_b - alpha - beta) * sum_b * (im_c(:,:,1)) / sum_r + beta * sum_b / (m * n);
+
+else 
+    b_r = sum_b / sum_r; 
+    b_g = sum_b / sum_g; 
+
+    if (b_r > Thr)
+        b_r = Thr;
+    end
+    if (b_g > Thr)
+        b_g = Thr;
+    end
+
+    im_c(:,:,1) = im_c(:,:,1) * alpha + (b_r - alpha - beta) * sum_r * (im_c(:,:,3)) / sum_b + beta * sum_r / (m * n);
+    im_c(:,:,2) = im_c(:,:,2) * alpha + (b_g - alpha - beta) * sum_g * (im_c(:,:,3)) / sum_b + beta * sum_g / (m * n);
+    im_c(:,:,3) = im_c(:,:,3); 
+end
+im_c = im_c / max(max(max(im_c))); 
+im_c = min(im_c, 1);
+im_c = max(im_c, 0);
+
+if ~exist('thres','var') || isempty(thres), thres = 0.01 ; end
+if ~exist('spacing','var') || isempty(spacing), spacing = 0.02 ; end %1/M in the paper
+if ~exist('n_colors','var') || isempty(N), N = 1000 ; end %number of colors clusters
+if ~exist('K','var') || isempty(K), K = 40 ; end %number of angles
+
+% Define search range for the air-light. The search range is different for each 
+% color channel. These values were used in all of our experiments.
+if ~exist('Amin','var') || isempty(Amin), Amin = [0,0.05,0.1]; end
+if ~exist('Amax','var') || isempty(Amax), Amax = 1; end
+
+% Air-light search range, accept a scalar if identical for all color channels
+if isscalar(Amin), Amin = repmat(Amin,1,3); end 
+if isscalar(Amax), Amax = repmat(Amax,1,3); end
+
+%% Convert input image to an indexed image
+[img_ind, points] = rgb2ind(im_c, N);
+[h,w,~] = size(im_c);
+% Remove empty clusters
+idx_in_use = unique(img_ind(:));
+idx_to_remove = setdiff(0:(size(points,1)-1),idx_in_use);
+points(idx_to_remove+1,:) = [];
+img_ind_sequential = zeros(h,w);
+for kk = 1:length(idx_in_use)
+    img_ind_sequential(img_ind==idx_in_use(kk)) = kk;
+end
+% Now the min value of img_ind_sequential is 1 rather then 0, and the indices
+% correspond to points
+
+% Count the occurences if each index - this is the clusters' weight
+[points_weight,~] = histcounts(img_ind_sequential(:),size(points,1));
+points_weight = points_weight./(h*w);
+if ~ismatrix(points), points = reshape(points,[],3); end % verify dim
+
+%% Define arrays of candidate air-light values and angles
+angle_list = reshape(linspace(0, pi, K),[],1);
+% Use angle_list(1:end-1) since angle_list(end)==pi, which is the same line
+% in 2D as since angle_list(1)==0
+directions_all = [sin(angle_list(1:end-1)) , cos(angle_list(1:end-1)) ];
+
+% Air-light candidates in each color channel
+ArangeR = Amin(1):spacing:Amax(1);
+ArangeG = Amin(2):spacing:Amax(2);
+ArangeB = Amin(3):spacing:Amax(3);
+
+ArangeR = reshape(ArangeR,[],1);
+ArangeG = reshape(ArangeG,[],1);
+A1 = kron(ArangeR, ones(length(ArangeG),1));
+A2 = kron(ones(length(ArangeR),1), ArangeG);
+Aall = [A1, A2];
+[~, AvoteRG] = vote_2D(points(:,1:2), points_weight, directions_all, Aall, thres );
+
+ArangeG = reshape(ArangeG,[],1);
+ArangeB = reshape(ArangeB,[],1);
+A1 = kron(ArangeG, ones(length(ArangeB),1));
+A2 = kron(ones(length(ArangeG),1), ArangeB);
+Aall = [A1, A2];
+[~, AvoteGB] = vote_2D(points(:,2:3), points_weight, directions_all, Aall, thres );
+
+ArangeR = reshape(ArangeR,[],1);
+ArangeB = reshape(ArangeB,[],1);
+A1 = kron(ArangeR, ones(length(ArangeB),1));
+A2 = kron(ones(length(ArangeR),1), ArangeB);
+Aall = [A1, A2];
+[~, AvoteRB] = vote_2D(points(:,[1,3]), points_weight, directions_all, Aall, thres);
+
+%% Find most probable airlight from marginal probabilities (2D arrays)
+% Normalize (otherwise the numbers are quite large)
+max_val = max( [max(AvoteRB(:)) , max(AvoteRG(:)) , max(AvoteGB(:)) ]);
+AvoteRG2 = AvoteRG./max_val;
+AvoteGB2 = AvoteGB./max_val;
+AvoteRB2 = AvoteRB./max_val;
+% Generate 3D volumes from 3 different 2D arrays
+A11 = repmat( reshape(AvoteRG2, length(ArangeG),length(ArangeR))', 1,1,length(ArangeB));
+tmp = reshape(AvoteRB2, length(ArangeB),length(ArangeR))';
+A22 = repmat(reshape(tmp, length(ArangeR),1,length(ArangeB)) , 1,length(ArangeG),1);
+tmp2 = reshape(AvoteGB2, length(ArangeB),length(ArangeG))';
+A33 = repmat(reshape(tmp2, 1, length(ArangeG),length(ArangeB)) , length(ArangeR),1,1);
+AvoteAll = A11.*A22.*A33;
+[~, idx] = max(AvoteAll(:));
+[idx_r,idx_g,idx_b] = ind2sub([length(ArangeR),length(ArangeG),length(ArangeB)],idx);
+Aout = [ArangeR(idx_r), ArangeG(idx_g), ArangeB(idx_b)];
+
+A=reshape(Aout,1,1,3);
+
+delt_I = zeros(m, n, c);
+
+for ColorCh = 1:1:c
+    delt_I(:,:,ColorCh) = im_c(:,:,ColorCh); 
+end
+
+delt_I_reshape = reshape(delt_I, [m*n, c]);
+% Reshape the delta image and append a column of ones for homogeneous coordinates
+delt_I_reshape_H = [delt_I_reshape, ones(m*n, 1)];
+
+% Reshape vector A into a 3x1 column vector and calculate its magnitude
+A_reshape = reshape(A, [3, 1]);
+A_ra = sqrt(sum(A_reshape.^2));  % Equivalent to sqrt(A_reshape(1)^2 + A_reshape(2)^2 + A_reshape(3)^2)
+
+% Define the rotation angles for the X and Y axes
+a = 90;
+b = -180;
+% Rotation matrix for rotation around the X axis
+Rx = [1, 0, 0;
+    0, cosd(a), -sind(a);
+    0, sind(a), cosd(a)];
+
+% Rotation matrix for rotation around the Y axis
+Ry = [cosd(b), 0, sind(b);
+    0, 1, 0;
+    -sind(b), 0, cosd(b)];
+
+% Combined rotation matrix for Y, X rotations and translation vector
+RT = [Ry * Rx, A_reshape];
+
+% Initialize the rotated image array
+delt_I_Rota = zeros(m*n, 3);
+
+% Perform the matrix multiplication to rotate the image
+delt_I_Rota = (RT * delt_I_reshape_H')';
+
+% Take the absolute value of the rotated image (to avoid negative values)
+delt_I_Rota = abs(delt_I_Rota);
+
+% Reshape the rotated image back to its original dimensions
+I_Rota = reshape(delt_I_Rota, [m, n, c]);
+
+% Define the number of superpixels, which can be modified based on the image resolution.
+PixelNum = 50000;
+
+% Compute superpixels for the rotated image
+[Label, ~] = superpixels(I_Rota, PixelNum);
+
+% Reshape the label matrix to a column vector for processing
+Label_superpixel = reshape(Label, [m*n, 1]);
+
+% Get the total number of unique superpixels
+n_points = max(Label_superpixel);
+
+% Calculate the radius (magnitude) for each pixel in the rotated image
+radius = sqrt(delt_I_Rota(:,1).^2 + delt_I_Rota(:,2).^2 + delt_I_Rota(:,3).^2);
+
+% Compute the mean value of each color channel (Red, Green, Blue) for each superpixel
+red_mean = accumarray(Label_superpixel, delt_I_Rota(:, 1), [n_points, 1], @mean);
+green_mean = accumarray(Label_superpixel, delt_I_Rota(:, 2), [n_points, 1], @mean);
+blue_mean = accumarray(Label_superpixel, delt_I_Rota(:, 3), [n_points, 1], @mean);
+
+% Combine the mean values of red, green, and blue channels into a single matrix
+vec = [red_mean, green_mean, blue_mean];
+
+% Reshape the radius to a column vector
+radius = reshape(radius, [m*n, 1]);
+
+% Convert the RGB values to LAB color space using a color transformation
+transform_lab = makecform('srgb2lab');  % Create a transformation structure for RGB to LAB
+transform_lab = applycform(vec, transform_lab);  % Apply the transformation
+transform_lab = lab2double(transform_lab);  % Convert the LAB values to double precision
+
+% Extract the 'a' and 'b' channels from the LAB color space
+ab = [transform_lab(:, 2), transform_lab(:, 3)];
+
+% Apply k-means clustering to the 'ab' values to create 2000 clusters
+T = kmeans(ab, 2000);
+
+% Find the maximum cluster index (the cutoff point)
+cutoff = max(T);
+
+% Reshape the superpixel labels and calculate max and standard deviation of radius for each cluster
+T_superpixels = reshape(T(Label_superpixel), [m*n, 1]);
+radius_max_reshape = accumarray(T_superpixels, radius(:), [cutoff, 1], @max);
+radius_std_reshape = accumarray(T_superpixels, radius(:), [cutoff, 1], @std);
+
+% Reshape the radius and max/std values back to the image dimensions
+radius_reshape = reshape(radius, [m, n, 1]);
+radius_max_reshape = reshape(radius_max_reshape(T_superpixels), [m, n, 1]);
+radius_std_reshape = reshape(radius_std_reshape(T_superpixels), [m, n, 1]);
+
+% Normalize the standard deviation values to the range [0, 1]
+radius_std_weight = (radius_std_reshape ./ max(max(radius_std_reshape)));
+
+% Estimate the lower bound of the transmission based on the image and A vector
+trans_lower_bound = 1 - min(bsxfun(@rdivide, im_c, reshape(A, 1, 1, 3)), [], 3);
+
+% Estimate the transmission by dividing the radius by the maximum radius for each superpixel
+transmission_estimation = radius_reshape ./ radius_max_reshape;
+
+% Ensure the transmission is not less than the lower bound for transmission estimation
+
+transmission = max(transmission_estimation, trans_lower_bound);
+
+% Regularization parameter for WLS optimization
+lambda = 0.1;
+im_x=im_c;
+small_num = 0.00001;
+
+if ~exist('lambda','var') || isempty(lambda), lambda = 0.05; end
+
+[h,w,~] = size(im_x);
+k = h*w;
+im_x = rgb2gray(im_x);
+
+% Compute affinities between adjacent pixels based on gradients of guidance
+dy = diff(im_c, 1, 1);
+dy = -lambda./(sum(abs(dy).^2,3) + small_num);
+dy = padarray(dy, [1 0], 'post');
+dy = dy(:);
+
+dx = diff(im_x, 1, 2); 
+dx = -lambda./(sum(abs(dx).^2,3) + small_num);
+dx = padarray(dx, [0 1], 'post');
+dx = dx(:);
+
+
+% Construct a five-point spatially inhomogeneous Laplacian matrix
+B = [dx, dy];
+d = [-h,-1];
+tamp = spdiags(B,d,k,k);
+
+ea = dx;
+we = padarray(dx, h, 'pre'); we = we(1:end-h);
+so = dy;
+no = padarray(dy, 1, 'pre'); no = no(1:end-1);
+
+D = -(ea+we+so+no);
+Asmoothness = tamp + tamp' + spdiags(D, 0, k, k);
+
+% Normalize data weight
+radius_std_weight = radius_std_weight - min(radius_std_weight(:)) ;
+radius_std_weight = 1.*radius_std_weight./(max(radius_std_weight(:))+small_num);
+
+% Make sure we have a boundary condition for the top line:
+% It will be the minimum of the transmission in each column
+% With reliability 0.8
+reliability_mask = radius_std_weight(1,:) < 0.6; % find missing boundary condition
+in_row1 = min( transmission,[], 1);
+radius_std_weight(1,reliability_mask) = 0.8;
+transmission(1,reliability_mask) = in_row1(reliability_mask);
+
+Adata = spdiags(radius_std_weight(:), 0, k, k);
+
+A_wls = Adata + Asmoothness;
+b = Adata*transmission(:);
+
+% Solve
+% out = lsqnonneg(A,b);
+transmission = A_wls\b;
+transmission = reshape(transmission, h, w);
+
+% Set up color space transformations (RGB to LAB and back)
+transform_lab = makecform('srgb2lab');
+transform_lab_A = makecform('srgb2lab');
+transform_rgb = makecform('lab2srgb');
+
+% Convert the input image from RGB to LAB color space
+transform_lab = applycform(im_c, transform_lab);
+transform_lab = lab2double(transform_lab); % Convert LAB values to double precision
+
+% Extract the L, a, and b channels from the LAB image
+L = transform_lab(:,:,1);
+
+% Convert the airlight vector A from RGB to LAB space
+air_Lab = applycform(A, transform_lab_A);
+air_Lab = lab2double(air_Lab);
+air_l = air_Lab(:,:,1);
+
+% Apply the transmission correction to the L channel
+transform_lab(:,:,1) = (L(:,:) - (1 - transmission) .* air_l) ./ max(transmission, 0.2);
+
+% Normalize and adjust the L channel to improve contrast
+Lab_l = zeros(m, n);
+Lab_l(:,:) = transform_lab(:,:,1);
+Lab_l(:,:) = (Lab_l(:,:) - min(min(Lab_l(:,:)))) / (max(max(Lab_l(:,:))) - min(min(Lab_l(:,:))));
+Lab_l(:,:) = imadjust(Lab_l(:,:));
+Lab_l(:,:) = Lab_l(:,:) * 100; % Scale to the range [0, 100]
+
+% Apply edge detection filters to the adjusted L channel
+H1 = [-1 -1 -1; 0 0 0; 1 1 1]; % Horizontal edge detection filter
+dx = filter2(H1, Lab_l);
+
+H2 = [-1 0 1; -1 0 1; -1 0 1]; % Vertical edge detection filter
+dy = filter2(H2, Lab_l);
+
+% Adjust the L channel by adding a weighted version of the gradient magnitude
+Lab_l = Lab_l + sqrt(dx.^2 + dy.^2) * 0.1;
+
+% Update the L channel in the LAB image with the modified values
+transform_lab(:,:,1) = Lab_l(:,:);
+
+% Convert the LAB image back to RGB color space
+img_dehazed = applycform(transform_lab, transform_rgb);
+
+% Apply a radiometric correction to the final dehazed image
+img_Restored = img_dehazed.^(1.05); % Apply gamma correction
+figure;
+subplot(1, 2, 1);
+imshow(Input);
+title('Original Image');
+subplot(1, 2, 2);
+imshow( img_Restored);
+title('FINAL OUTPUT');
+
+exportgraphics(gcf,'side_by_side_output.jpg');
